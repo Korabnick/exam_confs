@@ -1,0 +1,13 @@
+Flask==3.1.1
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.1.0
+Flask-HTTPAuth==4.8.0
+Flask-cors==6.0.0
+psycopg2-binary==2.9.10
+Flask-Admin==1.6.1
+gunicorn==23.0.0
+WTForms==2.3.3
+flasgger==0.9.7.1
+pytest==8.3.5
+pytest-cov==6.1.1
+flake8==7.2.0

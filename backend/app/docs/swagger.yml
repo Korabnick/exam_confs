@@ -1,0 +1,412 @@
+swagger: "2.0"
+info:
+  description: "API для управления преподавателями, курсами, студентами и заявками"
+  version: "1.0.0"
+  title: "Education Platform API"
+# host: "localhost:5000"
+basePath: "/api"
+schemes:
+  - "http"
+consumes:
+  - "application/json"
+produces:
+  - "application/json"
+
+parameters:
+  AuthorizationHeader:
+    name: Authorization
+    in: header
+    type: string
+    required: true
+    default: "Basic YWRtaW46U2lyaXVzMjAyNQ=="
+
+paths:
+  /teachers:
+    get:
+      summary: "Получить список всех преподавателей"
+      tags:
+        - "teachers"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+      responses:
+        200:
+          description: "Успешный ответ"
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Teacher"
+          examples:
+            application/json:
+              - id: 1
+                full_name: "Иван Иванов"
+                experience: 10
+                specialty: "Математика"
+                department: "Факультет наук"
+        401:
+          description: "Неавторизован"
+      security:
+        - basicAuth: []
+    post:
+      summary: "Создать нового преподавателя"
+      tags:
+        - "teachers"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+        - in: body
+          name: body
+          description: "Данные нового преподавателя"
+          required: true
+          schema:
+            $ref: "#/definitions/TeacherCreate"
+      responses:
+        201:
+          description: "Создано"
+          schema:
+            $ref: "#/definitions/IdResponse"
+          examples:
+            application/json:
+              id: 5
+        400:
+          description: "Некорректные данные"
+        401:
+          description: "Требуется администратор"
+      security:
+        - basicAuth: []
+
+  /teachers/{teacher_id}:
+    get:
+      summary: "Получить преподавателя по ID"
+      tags:
+        - "teachers"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+        - name: teacher_id
+          in: path
+          required: true
+          type: integer
+      responses:
+        200:
+          description: "Успешный ответ"
+          schema:
+            $ref: "#/definitions/Teacher"
+          examples:
+            application/json:
+              id: 1
+              full_name: "Иван Иванов"
+              experience: 10
+              specialty: "Математика"
+              department: "Факультет наук"
+        404:
+          description: "Не найден"
+      security:
+        - basicAuth: []
+    put:
+      summary: "Обновить преподавателя по ID"
+      tags:
+        - "teachers"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+        - name: teacher_id
+          in: path
+          required: true
+          type: integer
+        - in: body
+          name: body
+          description: "Новые данные преподавателя"
+          required: true
+          schema:
+            $ref: "#/definitions/TeacherCreate"
+      responses:
+        200:
+          description: "Обновлено"
+          schema:
+            $ref: "#/definitions/Teacher"
+          examples:
+            application/json:
+              id: 1
+              full_name: "Иван Иванов"
+              experience: 11
+              specialty: "Математика"
+              department: "Факультет наук"
+        400:
+          description: "Некорректные данные"
+        404:
+          description: "Не найден"
+      security:
+        - basicAuth: []
+    delete:
+      summary: "Удалить преподавателя по ID"
+      tags:
+        - "teachers"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+        - name: teacher_id
+          in: path
+          required: true
+          type: integer
+      responses:
+        204:
+          description: "Удалено"
+        404:
+          description: "Не найден"
+      security:
+        - basicAuth: []
+
+  /courses:
+    get:
+      summary: "Получить список курсов"
+      tags:
+        - "courses"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+      responses:
+        200:
+          description: "Успех"
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Course"
+          examples:
+            application/json:
+              - id: 1
+                name: "Алгебра"
+                teacher_id: 1
+                max_students: 30
+      security:
+        - basicAuth: []
+    post:
+      summary: "Создать курс"
+      tags:
+        - "courses"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/CourseCreate"
+      responses:
+        201:
+          description: "Создано"
+          schema:
+            $ref: "#/definitions/IdResponse"
+          examples:
+            application/json:
+              id: 2
+      security:
+        - basicAuth: []
+
+  /students:
+    get:
+      summary: "Получить список студентов"
+      tags:
+        - "students"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+      responses:
+        200:
+          description: "Успех"
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Student"
+          examples:
+            application/json:
+              - id: 1
+                full_name: "Петр Петров"
+                email: "petrov@example.com"
+                application_date: "2025-05-01"
+      security:
+        - basicAuth: []
+    post:
+      summary: "Создать студента"
+      tags:
+        - "students"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/StudentCreate"
+      responses:
+        201:
+          description: "Создано"
+          schema:
+            $ref: "#/definitions/IdResponse"
+      security:
+        - basicAuth: []
+
+  /requests:
+    get:
+      summary: "Получить список заявок"
+      tags:
+        - "requests"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+      responses:
+        200:
+          description: "Успех"
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Request"
+      security:
+        - basicAuth: []
+    post:
+      summary: "Создать заявку"
+      tags:
+        - "requests"
+      parameters:
+        - $ref: "#/parameters/AuthorizationHeader"
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/RequestCreate"
+      responses:
+        201:
+          description: "Создано"
+          schema:
+            $ref: "#/definitions/IdResponse"
+      security:
+        - basicAuth: []
+
+definitions:
+  Teacher:
+    type: object
+    required:
+      - id
+      - full_name
+      - experience
+      - specialty
+      - department
+    properties:
+      id:
+        type: integer
+      full_name:
+        type: string
+      experience:
+        type: integer
+      specialty:
+        type: string
+      department:
+        type: string
+
+  TeacherCreate:
+    type: object
+    required:
+      - full_name
+      - experience
+      - specialty
+      - department
+    properties:
+      full_name:
+        type: string
+      experience:
+        type: integer
+      specialty:
+        type: string
+      department:
+        type: string
+
+  Course:
+    type: object
+    required:
+      - id
+      - name
+      - teacher_id
+      - max_students
+    properties:
+      id:
+        type: integer
+      name:
+        type: string
+      teacher_id:
+        type: integer
+      max_students:
+        type: integer
+
+  CourseCreate:
+    type: object
+    required:
+      - name
+      - teacher_id
+      - max_students
+    properties:
+      name:
+        type: string
+      teacher_id:
+        type: integer
+      max_students:
+        type: integer
+
+  Student:
+    type: object
+    required:
+      - id
+      - full_name
+      - email
+      - application_date
+    properties:
+      id:
+        type: integer
+      full_name:
+        type: string
+      email:
+        type: string
+      application_date:
+        type: string
+        format: date
+
+  StudentCreate:
+    type: object
+    required:
+      - full_name
+      - email
+    properties:
+      full_name:
+        type: string
+      email:
+        type: string
+      application_date:
+        type: string
+        format: date
+
+  Request:
+    type: object
+    required:
+      - id
+      - teacher_id
+      - student_id
+      - description
+    properties:
+      id:
+        type: integer
+      teacher_id:
+        type: integer
+      student_id:
+        type: integer
+      description:
+        type: string
+
+  RequestCreate:
+    type: object
+    required:
+      - teacher_id
+      - student_id
+      - description
+    properties:
+      teacher_id:
+        type: integer
+      student_id:
+        type: integer
+      description:
+        type: string
+
+securityDefinitions:
+  basicAuth:
+    type: basic
+
+security:
+  - basicAuth: []
