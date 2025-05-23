@@ -2,16 +2,23 @@ from flask import Flask
 from flask_migrate import Migrate
 from flasgger import Swagger
 from flask_cors import CORS
-from .config import Config
+from .config import Config, DevelopmentConfig, TestingConfig, ProductionConfig
 from .models import db
 from .auth import auth
 from .routes import api
 from .admin import init_admin
 
 
-def create_app():
-    app = Flask(__name__)
-    app.config.from_object(Config)
+def create_app(config_name=None):
+    app = Flask(__name__, instance_relative_config=False)
+    if config_name == 'testing':
+        app.config.from_object(TestingConfig)
+    elif config_name == 'development':
+        app.config.from_object(DevelopmentConfig)
+    elif config_name == 'production':
+        app.config.from_object(ProductionConfig)
+    else:
+        app.config.from_object(Config)
 
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
@@ -44,6 +51,7 @@ def create_app():
     )
 
     app.register_blueprint(api)
-    init_admin(app)
+    if not app.config.get('TESTING'):
+        init_admin(app)
 
     return app

@@ -1,0 +1,11 @@
+[run]
+branch = True
+source = backend/app
+
+[report]
+omit =
+    backend/tests/*
+    */__init__.py
+
+[html]
+title = Coverage Report

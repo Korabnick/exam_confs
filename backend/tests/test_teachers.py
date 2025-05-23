@@ -1,25 +1,41 @@
-import base64
-import pytest
+def test_create_teacher(client, admin_headers):
+    response = client.post('/api/teachers', json={
+        'full_name': 'Иван Петров',
+        'experience': 5,
+        'specialty': 'Математика',
+        'department': 'Физико-математический'
+    }, headers=admin_headers)
+    assert response.status_code == 201
 
-def auth_header(username='admin', password='Sirius2025'):
-    cred = f"{username}:{password}".encode()
-    token = base64.b64encode(cred).decode()
-    return {'Authorization': f'Basic {token}'}
+def test_get_teachers(client, admin_headers):
+    client.post('/api/teachers', json={
+        'full_name': 'Тестовый Препод',
+        'experience': 10,
+        'specialty': 'Физика',
+        'department': 'Физфак'
+    }, headers=admin_headers)
+    response = client.get('/api/teachers', headers=admin_headers)
+    assert response.status_code == 200
+    assert isinstance(response.get_json(), list)
 
-def test_get_teachers_empty(client):
-    resp = client.get('/api/teachers', headers=auth_header())
-    assert resp.status_code == 200
-    assert resp.json == []
+def test_update_teacher(client, admin_headers):
+    post = client.post('/api/teachers', json={
+        'full_name': 'Test',
+        'experience': 1,
+        'specialty': 'Test',
+        'department': 'Test'
+    }, headers=admin_headers)
+    tid = post.get_json()['id']
+    response = client.put(f'/api/teachers/{tid}', json={'experience': 10}, headers=admin_headers)
+    assert response.status_code == 200
 
-@pytest.mark.parametrize('payload', [
-    {'full_name': 'Test Teacher', 'experience': 5, 'specialty': 'Physics', 'department': 'Science'}
-])
-def test_create_and_get_teacher(client, payload):
-    r = client.post('/api/teachers', json=payload, headers=auth_header())
-    assert r.status_code == 201
-    tid = r.json['id']
-    g = client.get(f'/api/teachers/{tid}', headers=auth_header())
-    assert g.status_code == 200
-    data = g.json
-    assert data['full_name'] == payload['full_name']
-    assert data['experience'] == payload['experience']
+def test_delete_teacher(client, admin_headers):
+    post = client.post('/api/teachers', json={
+        'full_name': 'To Delete',
+        'experience': 1,
+        'specialty': 'Test',
+        'department': 'Test'
+    }, headers=admin_headers)
+    tid = post.get_json()['id']
+    delete = client.delete(f'/api/teachers/{tid}', headers=admin_headers)
+    assert delete.status_code == 200

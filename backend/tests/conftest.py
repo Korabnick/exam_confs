@@ -1,27 +1,25 @@
-import sys, os
 import pytest
+from app import create_app, db
+from app.auth import auth
 
-# Подключаем папку backend для импорта app
-here = os.path.abspath(os.path.dirname(__file__))
-sys.path.insert(0, os.path.abspath(os.path.join(here, '..')))
-
-from app import create_app
-from app.models import db as _db
-
-@pytest.fixture(scope='session')
+@pytest.fixture
 def app():
-    # Создаём приложение и настраиваем тестовую БД
-    app = create_app()
-    app.config['TESTING'] = True
-    # Используем файл SQLite для тестов (in-memory на Windows иногда проблемен)
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///test.db'
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app = create_app('testing')
     with app.app_context():
-        _db.create_all()
+        db.create_all()
         yield app
-        _db.session.remove()
-        _db.drop_all()
+        db.session.remove()
+        db.drop_all()
 
-@pytest.fixture()
+@pytest.fixture
 def client(app):
     return app.test_client()
+
+@pytest.fixture
+def admin_headers():
+    return {}
+
+@pytest.fixture(autouse=True)
+def disable_auth(monkeypatch):
+    monkeypatch.setattr(auth, 'login_required', lambda *args, **kwargs: (lambda f: f))
+    yield

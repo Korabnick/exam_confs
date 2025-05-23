@@ -1,0 +1,841 @@
+docker-compose.yml:
+```
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: exam_user
+      POSTGRES_PASSWORD: exam_pass
+      POSTGRES_DB: exam_db
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    restart: always
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://exam_user:exam_pass@db:5432/exam_db
+      SECRET_KEY: super-secret-key
+    ports:
+      - "5000:5000"
+```
+
+db/init.sql:
+```
+-- Учителя
+CREATE TABLE teacher (
+    id SERIAL PRIMARY KEY,
+    full_name VARCHAR(255) NOT NULL,
+    experience INTEGER NOT NULL,
+    specialty VARCHAR(255) NOT NULL,
+    department VARCHAR(255) NOT NULL
+);
+
+    CREATE TABLE course (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        teacher_id INTEGER NOT NULL,
+        student_limit INTEGER NOT NULL,
+        CONSTRAINT fk_course_teacher FOREIGN KEY (teacher_id)
+            REFERENCES teacher (id)
+            ON DELETE CASCADE
+    );
+
+CREATE TABLE student (
+    id SERIAL PRIMARY KEY,
+    full_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE request (
+    id SERIAL PRIMARY KEY,
+    student_id INTEGER NOT NULL,
+    course_id  INTEGER NOT NULL,
+    description TEXT,
+    status VARCHAR(50) DEFAULT 'pending' NOT NULL,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_request_student FOREIGN KEY (student_id)
+        REFERENCES student (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_request_course FOREIGN KEY (course_id)
+        REFERENCES course  (id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX uq_student_pending_request 
+    ON request (student_id) 
+    WHERE (status = 'pending');
+
+CREATE OR REPLACE FUNCTION check_course_limit()
+RETURNS TRIGGER AS $$
+DECLARE 
+    current_count INTEGER;
+    max_limit INTEGER;
+BEGIN
+    IF NEW.status = 'approved' THEN
+        SELECT student_limit INTO max_limit 
+        FROM course 
+        WHERE id = NEW.course_id;
+
+        SELECT COUNT(*) INTO current_count 
+        FROM request 
+        WHERE 
+            course_id = NEW.course_id AND 
+            status = 'approved' AND 
+            id != COALESCE(NEW.id, 0);
+
+        IF current_count >= max_limit THEN
+            RAISE EXCEPTION 'Course student limit exceeded';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_check_course_limit
+BEFORE INSERT OR UPDATE ON request
+FOR EACH ROW EXECUTE FUNCTION check_course_limit();
+```
+
+backend/Dockerfile:
+```
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["gunicorn", "wsgi:app", "-b", "0.0.0.0:5000"]
+```
+
+backend/requirements.txt:
+```
+Flask==3.1.1
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.1.0
+Flask-HTTPAuth==4.8.0
+psycopg2-binary==2.9.10
+Flask-Admin==1.6.1
+gunicorn==23.0.0
+WTForms==2.3.3
+```
+
+backend/wsgi.py:
+```
+from app import create_app
+
+app = create_app()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+```
+
+backend/app/__init__.py:
+```
+from flask import Flask
+from flask_migrate import Migrate
+from .config import Config
+from .models import db
+from .auth import auth
+from .routes import api
+from .admin import init_admin
+
+
+def create_app():
+    app = Flask(__name__)
+    app.config.from_object(Config)
+
+    db.init_app(app)
+    Migrate(app, db)
+
+    app.register_blueprint(api)
+    init_admin(app)
+
+    return app
+```
+
+backend/app/admin.py:
+```
+from flask_admin import Admin, AdminIndexView, expose
+from flask_admin.contrib.sqla import ModelView
+from flask_admin.form import BaseForm
+from wtforms.ext.sqlalchemy.fields import QuerySelectField
+from wtforms.validators import DataRequired
+from wtforms import StringField, IntegerField
+from .models import db, Teacher, Course, Student, Request
+from .auth import auth
+import sqlalchemy.exc
+
+class SecureAdminIndexView(AdminIndexView):
+    @expose('/')
+    def index(self):
+        return super().index()
+
+    def is_accessible(self):
+        return auth.username() == 'admin'
+
+    def inaccessible_callback(self, name, **kwargs):
+        return auth.auth_error_callback(401)
+
+class AdminModelView(ModelView):
+    def is_accessible(self):
+        return auth.username() == 'admin'
+    def inaccessible_callback(self, name, **kwargs):
+        return auth.auth_error_callback(401)
+
+class TeacherAdmin(AdminModelView):
+    form_columns = [
+        'full_name',
+        'experience',
+        'specialty',
+        'department'
+    ]   
+
+def get_teachers():
+    return Teacher.query.all()
+
+class CourseForm(BaseForm):
+    title = StringField('Title')
+    teacher = QuerySelectField(
+        query_factory=get_teachers,
+        validators=[DataRequired()]
+    )
+    student_limit = IntegerField('Student Limit')
+
+class CourseAdmin(AdminModelView):
+    form = CourseForm
+    form_columns = ['title', 'teacher', 'student_limit']
+    
+class StudentAdmin(AdminModelView):
+    form_columns = ['full_name', 'email']
+    
+    def scaffold_form(self):
+        form_class = super(StudentAdmin, self).scaffold_form()
+        if 'requests' in form_class.__dict__.keys():
+            delattr(form_class, 'requests')
+        return form_class
+    
+class RequestAdmin(AdminModelView):
+    form_ajax_refs = {
+        'student': {
+            'fields': ('full_name', 'email'),
+            'page_size': 10
+        },
+        'course': {
+            'fields': ('title',),
+            'page_size': 10
+        }
+    }
+
+    def handle_exception(self, exc):
+        if isinstance(exc, sqlalchemy.exc.IntegrityError):
+            from flask import flash
+            flash('Ошибка: превышен лимит студентов курса', 'error')
+            return True
+        return super().handle_exception(exc)
+
+    def on_model_change(self, form, model, is_created):
+        try:
+            super().on_model_change(form, model, is_created)
+        except sqlalchemy.exc.IntegrityError as e:
+            if 'course student limit exceeded' in str(e).lower():
+                from flask import flash
+                flash('Нельзя утвердить заявку: курс заполнен', 'error')
+                raise
+
+admin = Admin(
+    name='Exam Admin',
+    template_mode='bootstrap3',
+    index_view=SecureAdminIndexView()
+)
+
+def init_admin(app):
+    admin.init_app(app)
+    admin.add_view(TeacherAdmin(Teacher, db.session))
+    admin.add_view(CourseAdmin(Course, db.session))
+    admin.add_view(StudentAdmin(Student, db.session))
+    admin.add_view(RequestAdmin(Request, db.session))
+```
+
+backend/app/auth.py:
+```
+from flask_httpauth import HTTPBasicAuth
+from werkzeug.security import generate_password_hash, check_password_hash
+
+auth = HTTPBasicAuth()
+
+users = {
+    'admin': generate_password_hash('Sirius2025'),
+    'user': generate_password_hash('userpass')
+}
+roles = {
+    'admin': 'admin',
+    'user': 'user'
+}
+
+@auth.verify_password
+def verify(username, password):
+    if username in users and check_password_hash(users.get(username), password):
+        return username
+
+@auth.get_user_roles
+def get_user_roles(user):
+    return [roles.get(user, 'user')]
+```
+
+backend/app/config.py:
+```
+import os
+
+class Config:
+    SQLALCHEMY_DATABASE_URI = os.getenv(
+        'DATABASE_URL',
+        'postgresql://exam_user:exam_pass@db:5432/exam_db'
+    )
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SECRET_KEY = os.getenv('SECRET_KEY', 'super-secret-key')
+```
+
+backend/app/extensions.py:
+```
+from flask_httpauth import HTTPBasicAuth
+
+auth = HTTPBasicAuth()
+```
+
+backend/app/models.py:
+```
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+
+db = SQLAlchemy()
+
+class Teacher(db.Model):
+    __tablename__ = 'teacher'
+    id            = db.Column(db.Integer, primary_key=True)
+    full_name     = db.Column(db.String(255), nullable=False)
+    experience    = db.Column(db.Integer, nullable=False)
+    specialty     = db.Column(db.String(255), nullable=False)
+    department    = db.Column(db.String(255), nullable=False)
+
+    # связь «1 → N» на Course
+    courses = db.relationship(
+        'Course',
+        backref='teacher',
+        cascade='all, delete-orphan',
+        lazy=True
+    )
+
+    def __str__(self):
+        return self.full_name
+
+class Course(db.Model):
+    __tablename__ = 'course'
+    id            = db.Column(db.Integer, primary_key=True)
+    title         = db.Column(db.String(255), nullable=False)
+    teacher_id    = db.Column(db.Integer, db.ForeignKey('teacher.id'), nullable=False)
+    student_limit = db.Column(db.Integer, nullable=False)
+    requests = db.relationship(
+        'Request',
+        backref='course',
+        cascade='all, delete-orphan',
+        lazy=True
+    )
+
+    def __str__(self):
+        return self.title
+
+class Student(db.Model):
+    __tablename__ = 'student'
+    id         = db.Column(db.Integer, primary_key=True)
+    full_name  = db.Column(db.String(255), nullable=False)
+    email      = db.Column(db.String(255), nullable=False, unique=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __str__(self):
+        return self.full_name
+
+class Request(db.Model):
+    __tablename__ = 'request'
+    id          = db.Column(db.Integer, primary_key=True)
+    course_id   = db.Column(db.Integer, db.ForeignKey('course.id'), nullable=False)
+    student_id  = db.Column(db.Integer, db.ForeignKey('student.id'), nullable=False)
+    description = db.Column(db.Text)
+    status      = db.Column(
+        db.String(50),
+        default='pending',
+        nullable=False,
+        server_default='pending'
+    )
+    created_at  = db.Column(db.DateTime, default=datetime.utcnow)
+
+    student = db.relationship(
+        'Student',
+        backref=db.backref('requests', cascade='all, delete-orphan', lazy=True),
+        lazy=True
+    )
+
+    def __str__(self):
+        return self.id
+```
+
+backend/app/routes.py:
+```
+from flask import Blueprint, request, jsonify, abort
+from .models import db, Teacher, Course, Student, Request
+from .auth import auth
+
+api = Blueprint('api', __name__, url_prefix='/api')
+
+def abort_if_not_found(item):
+    if not item:
+        abort(404)
+
+# TEACHERS CRUD
+
+@api.route('/teachers', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_teachers():
+    all_ = Teacher.query.all()
+    return jsonify([{
+        'id': t.id,
+        'full_name': t.full_name,
+        'experience': t.experience,
+        'specialty':  t.specialty,
+        'department': t.department
+    } for t in all_])
+
+@api.route('/teachers/<int:id>', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_teacher(id):
+    t = Teacher.query.get(id); abort_if_not_found(t)
+    return jsonify({
+        'id': t.id,
+        'full_name': t.full_name,
+        'experience': t.experience,
+        'specialty':  t.specialty,
+        'department': t.department
+    })
+
+@api.route('/teachers', methods=['POST'])
+@auth.login_required(role='admin')
+def create_teacher():
+    data = request.get_json() or {}
+    for f in ('full_name','experience','specialty','department'):
+        if f not in data: abort(400)
+    t = Teacher(**{k: data[k] for k in data})
+    db.session.add(t); db.session.commit()
+    return jsonify({'id': t.id}), 201
+
+@api.route('/teachers/<int:id>', methods=['PUT','PATCH'])
+@auth.login_required(role='admin')
+def update_teacher(id):
+    t = Teacher.query.get(id); abort_if_not_found(t)
+    data = request.get_json() or {}
+    for f in ('full_name','experience','specialty','department'):
+        if f in data: setattr(t, f, data[f])
+    db.session.commit()
+    return jsonify({'id': t.id})
+
+@api.route('/teachers/<int:id>', methods=['DELETE'])
+@auth.login_required(role='admin')
+def delete_teacher(id):
+    t = Teacher.query.get(id); abort_if_not_found(t)
+    db.session.delete(t); db.session.commit()
+    return jsonify({'result': True})
+
+
+# COURSES CRUD
+
+@api.route('/courses', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_courses():
+    all_ = Course.query.all()
+    return jsonify([{
+        'id': c.id,
+        'title': c.title,
+        'teacher_id': c.teacher_id,
+        'student_limit': c.student_limit
+    } for c in all_])
+
+@api.route('/courses/<int:id>', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_course(id):
+    c = Course.query.get(id); abort_if_not_found(c)
+    return jsonify({
+        'id': c.id,
+        'title': c.title,
+        'teacher_id': c.teacher_id,
+        'student_limit': c.student_limit
+    })
+
+@api.route('/courses', methods=['POST'])
+@auth.login_required(role='admin')
+def create_course():
+    data = request.get_json() or {}
+    for f in ('title','teacher_id','student_limit'):
+        if f not in data: abort(400)
+    c = Course(**{k: data[k] for k in data})
+    db.session.add(c); db.session.commit()
+    return jsonify({'id': c.id}), 201
+
+@api.route('/courses/<int:id>', methods=['PUT','PATCH'])
+@auth.login_required(role='admin')
+def update_course(id):
+    c = Course.query.get(id); abort_if_not_found(c)
+    data = request.get_json() or {}
+    for f in ('title','teacher_id','student_limit'):
+        if f in data: setattr(c, f, data[f])
+    db.session.commit()
+    return jsonify({'id': c.id})
+
+@api.route('/courses/<int:id>', methods=['DELETE'])
+@auth.login_required(role='admin')
+def delete_course(id):
+    c = Course.query.get(id); abort_if_not_found(c)
+    db.session.delete(c); db.session.commit()
+    return jsonify({'result': True})
+
+
+# STUDENTS CRUD
+
+@api.route('/students', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_students():
+    all_ = Student.query.all()
+    return jsonify([{
+        'id': s.id,
+        'full_name': s.full_name,
+        'email': s.email,
+        'created_at': s.created_at.isoformat()
+    } for s in all_])
+
+@api.route('/students/<int:id>', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_student(id):
+    s = Student.query.get(id); abort_if_not_found(s)
+    return jsonify({
+        'id': s.id,
+        'full_name': s.full_name,
+        'email': s.email,
+        'created_at': s.created_at.isoformat()
+    })
+
+@api.route('/students', methods=['POST'])
+@auth.login_required(role='admin')
+def create_student():
+    data = request.get_json() or {}
+    for f in ('full_name','email'):
+        if f not in data: abort(400)
+    s = Student(full_name=data['full_name'], email=data['email'])
+    db.session.add(s); db.session.commit()
+    return jsonify({'id': s.id}), 201
+
+@api.route('/students/<int:id>', methods=['PUT','PATCH'])
+@auth.login_required(role='admin')
+def update_student(id):
+    s = Student.query.get(id); abort_if_not_found(s)
+    data = request.get_json() or {}
+    for f in ('full_name','email'):
+        if f in data: setattr(s, f, data[f])
+    db.session.commit()
+    return jsonify({'id': s.id})
+
+@api.route('/students/<int:id>', methods=['DELETE'])
+@auth.login_required(role='admin')
+def delete_student(id):
+    s = Student.query.get(id); abort_if_not_found(s)
+    db.session.delete(s); db.session.commit()
+    return jsonify({'result': True})
+
+
+# REQUESTS CRUD
+
+@api.route('/requests', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_requests():
+    all_ = Request.query.all()
+    return jsonify([{
+        'id': r.id,
+        'student_id': r.student_id,
+        'course_id':  r.course_id,
+        'description': r.description,
+        'status': r.status,
+        'created_at': r.created_at.isoformat()
+    } for r in all_])
+
+@api.route('/requests/<int:id>', methods=['GET'])
+@auth.login_required(role=['user','admin'])
+def get_request(id):
+    r = Request.query.get(id); abort_if_not_found(r)
+    return jsonify({
+        'id': r.id,
+        'student_id': r.student_id,
+        'course_id':  r.course_id,
+        'description': r.description,
+        'status': r.status,
+        'created_at': r.created_at.isoformat()
+    })
+
+@api.route('/requests', methods=['POST'])
+@auth.login_required(role='admin')
+def create_request():
+    data = request.get_json() or {}
+    for f in ('student_id', 'course_id'):
+        if f not in data: abort(400)
+
+    course = Course.query.get(data['course_id'])
+    abort_if_not_found(course)
+
+    # Считаем ТОЛЬКО подтверждённые заявки
+    existing_count = Request.query.filter_by(
+        course_id=course.id,
+        status='approved'
+    ).count()
+    
+    if existing_count >= course.student_limit:
+        return jsonify({'error': 'Course is full'}), 400
+
+    # Проверяем существующую pending заявку
+    if Request.query.filter_by(
+        student_id=data['student_id'],
+        status='pending'
+    ).first():
+        return jsonify({'error': 'Student already has a pending request'}), 400
+
+    r = Request(
+        student_id=data['student_id'],
+        course_id=data['course_id'],
+        description=data.get('description'),
+        status=data.get('status', 'pending')
+    )
+    db.session.add(r)
+    db.session.commit()
+    return jsonify({'id': r.id}), 201
+
+@api.route('/requests/<int:id>', methods=['PUT','PATCH'])
+@auth.login_required(role='admin')
+def update_request(id):
+    r = Request.query.get(id)
+    abort_if_not_found(r)
+    
+    data = request.get_json() or {}
+    new_status = data.get('status', r.status)
+    new_course_id = data.get('course_id', r.course_id)
+
+    # Validate course limit if status is approved or course_id is changed
+    if new_status == 'approved' or 'course_id' in data:
+        new_course = Course.query.get(new_course_id)
+        if not new_course:
+            abort(404)
+        
+        approved_count = Request.query.filter(
+            Request.course_id == new_course_id,
+            Request.status == 'approved',
+            Request.id != r.id
+        ).count()
+
+        if new_status == 'approved':
+            approved_count += 1
+
+        if approved_count > new_course.student_limit:
+            return jsonify({'error': 'Course is full'}), 400
+
+    # Apply changes
+    if 'status' in data:
+        r.status = data['status']
+    if 'course_id' in data:
+        r.course_id = data['course_id']
+    if 'description' in data:
+        r.description = data['description']
+    
+    db.session.commit()
+    return jsonify({'id': r.id})
+
+@api.route('/requests/<int:id>', methods=['DELETE'])
+@auth.login_required(role='admin')
+def delete_request(id):
+    r = Request.query.get(id); abort_if_not_found(r)
+    db.session.delete(r); db.session.commit()
+    return jsonify({'result': True})
+```
+
+backend/migrations/env.py:
+```
+import logging
+from logging.config import fileConfig
+
+from flask import current_app
+
+from alembic import context
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+fileConfig(config.config_file_name)
+logger = logging.getLogger('alembic.env')
+
+
+def get_engine():
+    try:
+        # this works with Flask-SQLAlchemy<3 and Alchemical
+        return current_app.extensions['migrate'].db.get_engine()
+    except (TypeError, AttributeError):
+        # this works with Flask-SQLAlchemy>=3
+        return current_app.extensions['migrate'].db.engine
+
+
+def get_engine_url():
+    try:
+        return get_engine().url.render_as_string(hide_password=False).replace(
+            '%', '%%')
+    except AttributeError:
+        return str(get_engine().url).replace('%', '%%')
+
+
+# add your model's MetaData object here
+# for 'autogenerate' support
+
+from app.models import db
+target_metadata = db.metadata
+
+config.set_main_option('sqlalchemy.url', get_engine_url())
+target_db = current_app.extensions['migrate'].db
+
+# other values from the config, defined by the needs of env.py,
+# can be acquired:
+# my_important_option = config.get_main_option("my_important_option")
+# ... etc.
+
+
+def get_metadata():
+    if hasattr(target_db, 'metadatas'):
+        return target_db.metadatas[None]
+    return target_db.metadata
+
+
+def run_migrations_offline():
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL
+    and not an Engine, though an Engine is acceptable
+    here as well.  By skipping the Engine creation
+    we don't even need a DBAPI to be available.
+
+    Calls to context.execute() here emit the given string to the
+    script output.
+
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url, target_metadata=get_metadata(), literal_binds=True
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online():
+    """Run migrations in 'online' mode.
+
+    In this scenario we need to create an Engine
+    and associate a connection with the context.
+
+    """
+
+    # this callback is used to prevent an auto-migration from being generated
+    # when there are no changes to the schema
+    # reference: http://alembic.zzzcomputing.com/en/latest/cookbook.html
+    def process_revision_directives(context, revision, directives):
+        if getattr(config.cmd_opts, 'autogenerate', False):
+            script = directives[0]
+            if script.upgrade_ops.is_empty():
+                directives[:] = []
+                logger.info('No changes in schema detected.')
+
+    conf_args = current_app.extensions['migrate'].configure_args
+    if conf_args.get("process_revision_directives") is None:
+        conf_args["process_revision_directives"] = process_revision_directives
+
+    connectable = get_engine()
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=get_metadata(),
+            **conf_args
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+```
+
+backend/migrations/alembic.ini:
+```
+# A generic, single database configuration.
+
+# [alembic]
+# template used to generate migration files
+# file_template = %%(rev)s_%%(slug)s
+[alembic]
+script_location = migrations
+
+# set to 'true' to run the environment during
+# the 'revision' command, regardless of autogenerate
+# revision_environment = false
+
+
+# Logging configuration
+[loggers]
+keys = root,sqlalchemy,alembic,flask_migrate
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARN
+handlers = console
+qualname =
+
+[logger_sqlalchemy]
+level = WARN
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[logger_flask_migrate]
+level = INFO
+handlers =
+qualname = flask_migrate
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+datefmt = %H:%M:%S
+```

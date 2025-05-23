@@ -7,3 +7,17 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SECRET_KEY = os.getenv('SECRET_KEY', 'super-secret-key')
+
+class BaseConfig:
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+class DevelopmentConfig(BaseConfig):
+    DEBUG = True
+    SQLALCHEMY_DATABASE_URI = 'postgresql://user:pass@localhost/dev_db'
+
+class TestingConfig(BaseConfig):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+
+class ProductionConfig(BaseConfig):
+    SQLALCHEMY_DATABASE_URI = 'postgresql://user:pass@localhost/prod_db'
